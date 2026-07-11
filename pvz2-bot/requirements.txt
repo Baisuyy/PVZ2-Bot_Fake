@@ -1,0 +1,10 @@
+flask>=3.0
+requests>=2.31
+pycryptodome>=3.19
+aiosqlite>=0.20
+fastapi>=0.109
+uvicorn>=0.27
+pydantic>=2.6
+asyncpg>=0.29
+redis>=5.0
+waitress>=3.0
