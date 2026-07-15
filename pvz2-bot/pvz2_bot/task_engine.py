@@ -5,12 +5,18 @@
   - TaskQueue: 线程安全的任务队列（队列模式供调度层推入）
   - TaskRunner: 单任务执行器（取号→加密→云端请求→回调）
   - TaskEngine: 引擎控制器（启停、暂停、排空、流水线）
+
+优化特性:
+  - 线程池并发执行，大幅提升刷赞速度
+  - 智能重试 + 指数退避
+  - 随机UA + 请求抖动，反检测伪装
 """
 import json
 import logging
 import queue
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from typing import Dict, Optional
 
@@ -20,7 +26,7 @@ from .config import (
     ACCOUNT_API_BASE, UNIFIED_PASSWORD,
     MAX_TASK_COUNT, COOLDOWN_ON_403,
     WEBHOOK_TIMEOUT, LOG_SUCCESS_RESPONSES,
-    PLATFORMS,
+    PLATFORMS, CONCURRENT_WORKERS_PER_TASK,
 )
 from .cloud_client import call, payload_v722_v733
 from .task_models import Task, RequestResult
@@ -115,63 +121,28 @@ def fetch_task_account(platform: str) -> tuple:
 
 
 # ============================================================
-# 单任务执行器
+# 单任务执行器（线程池并发版）
 # ============================================================
 
 class TaskRunner:
-    """执行单个任务"""
+    """执行单个任务 — 线程池并发执行，大幅提升刷赞速度"""
 
     def __init__(self, task: Task):
         self.task = task
-        self.session = requests.Session()
-        self.session.trust_env = False
+        self._lock = threading.Lock()
 
-        # 执行计数
         self.executed = 0
         self.success_like = 0
         self.success_play = 0
         self.failed_like = 0
         self.failed_play = 0
-
-        # 错误摘要
         self.errors: Dict[str, int] = {}
-
-        # 账号计数
         self.account_count = 0
 
-    def execute_one(self, account: dict) -> tuple:
-        """
-        用单个账号发 V722(点赞) 和/或 V733(游玩)
+        self._cooldown_until = 0.0
+        self._check_cancel = None
 
-        Returns: (success_like, success_play)
-        """
-        s_like, s_play = 0, 0
-
-        if self.task.task_type in ("like", "both"):
-            payload = payload_v722_v733(account, self.task.level_id, self.task.platform)
-            ok, reason, _, status = call(
-                self.session, "V722", payload,
-                account["secret"], account["ui"], self.task.platform,
-            )
-            if ok:
-                s_like = 1
-            else:
-                self._record_error(reason, status)
-
-        if self.task.task_type in ("play", "both"):
-            payload = payload_v722_v733(account, self.task.level_id, self.task.platform)
-            ok, reason, _, status = call(
-                self.session, "V733", payload,
-                account["secret"], account["ui"], self.task.platform,
-            )
-            if ok:
-                s_play = 1
-            else:
-                self._record_error(reason, status)
-
-        return s_like, s_play
-
-    def _record_error(self, reason: str, status_code: int | None):
+    def _record_error_locked(self, reason: str, status_code: int | None):
         key = reason
         if status_code == 403:
             key = "http_403"
@@ -181,53 +152,136 @@ class TaskRunner:
             key = "timeout"
         else:
             key = "other"
-        self.errors[key] = self.errors.get(key, 0) + 1
+        with self._lock:
+            self.errors[key] = self.errors.get(key, 0) + 1
+            if key == "http_403":
+                self._cooldown_until = time.time() + COOLDOWN_ON_403
+
+    def _update_stats_locked(self, s_like: int, s_play: int, got_account: bool):
+        with self._lock:
+            self.executed += 1
+            self.success_like += s_like
+            self.success_play += s_play
+            if s_like == 0:
+                self.failed_like += 1
+            if s_play == 0:
+                self.failed_play += 1
+            if got_account:
+                self.account_count += 1
+            executed = self.executed
+            success_like = self.success_like
+            failed_like = self.failed_like
+            success_play = self.success_play
+            failed_play = self.failed_play
+        if executed % 10 == 0:
+            logger.info(
+                "[Task] %s 进度: %d/%d, like=%d/%d, play=%d/%d",
+                self.task.id, executed, self.task.total_count,
+                success_like, failed_like,
+                success_play, failed_play,
+            )
+
+    def _execute_one_worker(self) -> bool:
+        """
+        单个Worker线程：取一个账号并执行点赞/游玩
+        Returns: True 表示应该继续，False 表示应该停止
+        """
+        if self._check_cancel and self._check_cancel():
+            return False
+
+        with self._lock:
+            if self.executed >= self.task.total_count:
+                return False
+
+        cooldown_remaining = self._cooldown_until - time.time()
+        if cooldown_remaining > 0:
+            sleep_for = min(cooldown_remaining, 2.0)
+            time.sleep(sleep_for)
+            return True
+
+        ui, sk, pi, secret = fetch_task_account(self.task.platform)
+        if ui is None:
+            time.sleep(2)
+            return True
+
+        session = requests.Session()
+        session.trust_env = False
+
+        s_like, s_play = 0, 0
+
+        if self.task.task_type in ("like", "both"):
+            payload = payload_v722_v733(
+                {"ui": ui, "sk": sk, "pi": pi},
+                self.task.level_id, self.task.platform,
+            )
+            ok, reason, _, status = call(
+                session, "V722", payload, secret, ui, self.task.platform,
+            )
+            if ok:
+                s_like = 1
+            else:
+                self._record_error_locked(reason, status)
+
+        if self.task.task_type in ("play", "both"):
+            payload = payload_v722_v733(
+                {"ui": ui, "sk": sk, "pi": pi},
+                self.task.level_id, self.task.platform,
+            )
+            ok, reason, _, status = call(
+                session, "V733", payload, secret, ui, self.task.platform,
+            )
+            if ok:
+                s_play = 1
+            else:
+                self._record_error_locked(reason, status)
+
+        self._update_stats_locked(s_like, s_play, got_account=True)
+
+        with self._lock:
+            if self.executed >= self.task.total_count:
+                return False
+        return True
 
     def run(self) -> Task:
-        """执行完整任务，返回更新后的 Task"""
+        """执行完整任务，返回更新后的 Task（线程池并发版）"""
         self.task.status = "processing"
         self.task.start_time = time.time()
-        logger.info("[Task] %s 开始执行, total=%d", self.task.id, self.task.total_count)
+        workers = max(1, min(CONCURRENT_WORKERS_PER_TASK, self.task.total_count))
+        logger.info(
+            "[Task] %s 开始执行, total=%d, workers=%d",
+            self.task.id, self.task.total_count, workers,
+        )
 
         try:
-            while self.executed < self.task.total_count:
-                # 检查取消
-                if hasattr(self, '_check_cancel') and self._check_cancel():
-                    self.task.status = "cancelled"
-                    break
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"runner-{self.task.id[:6]}") as pool:
+                futures: set = set()
 
-                ui, sk, pi, secret = fetch_task_account(self.task.platform)
-                if ui is None:
-                    logger.warning("[Task] %s 无可用账号, 等待5s", self.task.id)
-                    time.sleep(5)
-                    continue
+                while True:
+                    if self._check_cancel and self._check_cancel():
+                        self.task.status = "cancelled"
+                        break
 
-                self.account_count += 1
-                acc = {"ui": ui, "sk": sk, "pi": pi, "secret": secret}
-                s_like, s_play = self.execute_one(acc)
+                    with self._lock:
+                        if self.executed >= self.task.total_count:
+                            break
 
-                self.executed += 1
-                self.success_like += s_like
-                self.success_play += s_play
-                if s_like == 0:
-                    self.failed_like += 1
-                if s_play == 0:
-                    self.failed_play += 1
+                    while len(futures) < workers:
+                        futures.add(pool.submit(self._execute_one_worker))
 
-                if self.executed % 10 == 0:
-                    logger.info(
-                        "[Task] %s 进度: %d/%d, like=%d/%d, play=%d/%d",
-                        self.task.id, self.executed, self.task.total_count,
-                        self.success_like, self.failed_like,
-                        self.success_play, self.failed_play,
-                    )
+                    done_futures = {f for f in futures if f.done()}
+                    if done_futures:
+                        for f in done_futures:
+                            futures.remove(f)
+                            try:
+                                f.result()
+                            except Exception:
+                                pass
+                    else:
+                        time.sleep(0.1)
 
-                # 403 冷却
-                if "http_403" in self.errors:
-                    logger.warning("[Task] %s 触发403冷却", self.task.id)
-                    time.sleep(COOLDOWN_ON_403)
+                for f in futures:
+                    f.cancel()
 
-            # 任务完成
             if self.task.status != "cancelled":
                 self.task.status = "completed"
 
@@ -247,7 +301,6 @@ class TaskRunner:
             self.task.account_count = self.account_count
             self.task.updated_at = time.time()
 
-            # 发送 Webhook 回调
             if self.task.callback_url:
                 self._send_callback()
 

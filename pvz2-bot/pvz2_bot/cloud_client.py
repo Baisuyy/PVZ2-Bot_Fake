@@ -5,6 +5,7 @@ PVZ2 云端 API 客户端 — 所有加密请求的统一入口
 """
 import json
 import logging
+import random
 import time
 from typing import Optional
 
@@ -13,11 +14,38 @@ import requests
 from .config import (
     ANDROID_CLOUD_URL, IOS_CLOUD_URL, IOS_REGISTER_URL,
     PLATFORMS, DEFAULT_SECRET,
-    REQUEST_TIMEOUT, MIN_REQUEST_INTERVAL,
+    REQUEST_TIMEOUT, MIN_REQUEST_INTERVAL, MAX_REQUEST_INTERVAL, REQUEST_JITTER,
+    MAX_RETRY_COUNT, RETRY_BASE_DELAY, RETRY_BACKOFF_FACTOR,
 )
 from .crypto import encrypt, decode_cloud_response, render_eu
 
 logger = logging.getLogger("cloud_client")
+
+_USER_AGENTS = [
+    "Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 12; SM-S908E) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 15_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.7 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPad; CPU OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+    "Dalvik/2.1.0 (Linux; U; Android 13; SM-G991B Build/TP1A.220624.014)",
+    "Dalvik/2.1.0 (Linux; U; Android 12; SM-S908E Build/SP1A.210812.016)",
+]
+
+_RETRYABLE_REASONS = {
+    "timeout", "request_error", "unknown",
+    "http_5xx", "http_429", "http_408",
+}
+
+
+def random_user_agent() -> str:
+    return random.choice(_USER_AGENTS)
+
+
+def _random_sleep_duration() -> float:
+    base = random.uniform(MIN_REQUEST_INTERVAL, MAX_REQUEST_INTERVAL)
+    jitter = random.uniform(-REQUEST_JITTER, REQUEST_JITTER)
+    return max(MIN_REQUEST_INTERVAL * 0.5, base + jitter)
 
 
 def _build_payload(acc: dict, level_id: str, platform: str) -> dict:
@@ -33,36 +61,22 @@ def _build_payload(acc: dict, level_id: str, platform: str) -> dict:
     return payload
 
 
-def call(
+def _single_call(
     session: requests.Session,
     req_code: str,
     payload: dict,
     secret: str,
-    ui: str = "",
-    platform: str = "android",
+    ui: str,
+    platform: str,
 ) -> tuple[bool, str, dict | None, int | None]:
-    """
-    发送单次加密请求到 PVZ2 云端。
-
-    Args:
-        session: 复用连接池
-        req_code: API命令码 (V722/V733/V900/V876/V303/V312/V201/V203 等)
-        payload: 明文payload dict (不含req/ev)
-        secret: AES密钥
-        ui: 用于生成eu头
-        platform: android/ios
-
-    Returns:
-        (success, reason, decoded_body_or_None, http_status_code)
-    """
-    start = time.time()
     base_url = PLATFORMS[platform]["base_url"]
 
     try:
         plain = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
         e = encrypt(plain, secret, req_code)
         eu = render_eu(ui, secret, req_code) if ui else ""
-        headers = {"eu": eu} if eu else None
+        headers = {"eu": eu} if eu else {}
+        headers["User-Agent"] = random_user_agent()
 
         resp = session.post(
             base_url,
@@ -73,6 +87,10 @@ def call(
 
         if resp.status_code == 403:
             return False, "http_403", None, 403
+        if resp.status_code == 429:
+            return False, "http_429", None, 429
+        if resp.status_code == 408:
+            return False, "http_408", None, 408
         if resp.status_code >= 500:
             return False, "http_5xx", None, resp.status_code
         if resp.status_code >= 400:
@@ -98,11 +116,71 @@ def call(
         return False, "request_error", None, None
     except Exception:
         return False, "unknown", None, None
-    finally:
-        elapsed = time.time() - start
-        sleep_time = MIN_REQUEST_INTERVAL - elapsed
-        if sleep_time > 0:
-            time.sleep(sleep_time)
+
+
+def call(
+    session: requests.Session,
+    req_code: str,
+    payload: dict,
+    secret: str,
+    ui: str = "",
+    platform: str = "android",
+) -> tuple[bool, str, dict | None, int | None]:
+    """
+    发送加密请求到 PVZ2 云端（带智能重试 + 反检测伪装）。
+
+    重试策略:
+      - 仅对可重试错误（超时、网络错误、5xx、429）进行重试
+      - 指数退避: base_delay * (backoff_factor ^ attempt)
+      - 每次重试都随机化 User-Agent
+      - 请求间隔随机化并加入抖动
+
+    Args:
+        session: 复用连接池
+        req_code: API命令码 (V722/V733/V900/V876/V303/V312/V201/V203 等)
+        payload: 明文payload dict (不含req/ev)
+        secret: AES密钥
+        ui: 用于生成eu头
+        platform: android/ios
+
+    Returns:
+        (success, reason, decoded_body_or_None, http_status_code)
+    """
+    start = time.time()
+    last_result: tuple = (False, "unknown", None, None)
+    attempts = 0
+
+    for attempt in range(MAX_RETRY_COUNT + 1):
+        attempts = attempt + 1
+        success, reason, body, status = _single_call(
+            session, req_code, payload, secret, ui, platform
+        )
+        last_result = (success, reason, body, status)
+
+        if success:
+            break
+
+        if reason not in _RETRYABLE_REASONS:
+            break
+
+        if attempt < MAX_RETRY_COUNT:
+            delay = RETRY_BASE_DELAY * (RETRY_BACKOFF_FACTOR ** attempt)
+            delay = delay * random.uniform(0.7, 1.3)
+            logger.debug(
+                "请求失败(%s)，第%d/%d次重试，延迟%.2fs",
+                reason, attempt + 1, MAX_RETRY_COUNT, delay,
+            )
+            time.sleep(delay)
+
+    elapsed = time.time() - start
+    sleep_time = _random_sleep_duration() - elapsed
+    if sleep_time > 0:
+        time.sleep(sleep_time)
+
+    if attempts > 1:
+        logger.debug("请求共尝试%d次，最终结果: %s", attempts, last_result[1])
+
+    return last_result
 
 
 # ============================================================

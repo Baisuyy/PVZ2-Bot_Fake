@@ -60,8 +60,18 @@ NODE_LISTEN_PORT = int(os.getenv("PVZ_NODE_PORT", "39902"))
 # 请求控制
 REQUEST_TIMEOUT = float(os.getenv("PVZ_REQUEST_TIMEOUT", "5.0"))
 MIN_REQUEST_INTERVAL = float(os.getenv("PVZ_MIN_INTERVAL", "0.4"))
+MAX_REQUEST_INTERVAL = float(os.getenv("PVZ_MAX_INTERVAL", "0.8"))
+REQUEST_JITTER = float(os.getenv("PVZ_REQUEST_JITTER", "0.2"))
 COOLDOWN_ON_403 = float(os.getenv("PVZ_COOLDOWN_ON_403", "600"))
 MAX_TASK_COUNT = int(os.getenv("PVZ_MAX_TASK_COUNT", "80000"))
+
+# 重试机制
+MAX_RETRY_COUNT = int(os.getenv("PVZ_MAX_RETRY", "3"))
+RETRY_BASE_DELAY = float(os.getenv("PVZ_RETRY_DELAY", "1.0"))
+RETRY_BACKOFF_FACTOR = float(os.getenv("PVZ_RETRY_BACKOFF", "2.0"))
+
+# 并发控制
+CONCURRENT_WORKERS_PER_TASK = int(os.getenv("PVZ_TASK_WORKERS", "5"))
 
 # Webhook 回调
 WEBHOOK_TIMEOUT = float(os.getenv("PVZ_WEBHOOK_TIMEOUT", "3.0"))
