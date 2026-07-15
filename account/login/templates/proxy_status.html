@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>代理状态监控</title>
+  <style>
+    :root {
+      --bg: #0f1923;
+      --bg2: #162634;
+      --panel: #f9f7f1;
+      --line: #d7d4c9;
+      --text: #1e2c37;
+      --muted: #647886;
+      --ok: #1b7a45;
+      --err: #b83939;
+      --warn: #a56b13;
+      --btn: #1f5d8c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(circle at 15% 15%, #214663 0%, transparent 36%),
+                  radial-gradient(circle at 85% 80%, #243448 0%, transparent 34%),
+                  linear-gradient(135deg, var(--bg), var(--bg2));
+      color: var(--text);
+      font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+      padding: 20px;
+    }
+    .wrap { max-width: 1100px; margin: 0 auto; }
+    .card {
+      background: var(--panel);
+      border: 1px solid rgba(0, 0, 0, .08);
+      border-radius: 16px;
+      box-shadow: 0 14px 30px rgba(0, 0, 0, .25);
+      overflow: hidden;
+    }
+    .head {
+      padding: 14px 18px;
+      background: linear-gradient(90deg, #173a57, #245e89);
+      color: #f2f5f8;
+      font-weight: 700;
+      letter-spacing: .4px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .head a { color: #d7e6f3; text-decoration: underline; }
+    .body { padding: 16px 18px; }
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    button, select, input {
+      font: inherit;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      padding: 8px 12px;
+      background: #fff;
+    }
+    button {
+      border: none;
+      cursor: pointer;
+      background: var(--btn);
+      color: #fff;
+      font-weight: 700;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .stat {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: #fff;
+    }
+    .stat .k { color: var(--muted); font-size: 12px; }
+    .stat .v { font-size: 20px; font-weight: 700; margin-top: 4px; }
+    .v.ok { color: var(--ok); }
+    .v.err { color: var(--err); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      padding: 10px;
+      font-size: 13px;
+      vertical-align: top;
+    }
+    th { background: #f3efe3; color: #415261; }
+    .badge {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 3px 10px;
+      color: #fff;
+      font-weight: 700;
+      font-size: 12px;
+    }
+    .badge.ok { background: var(--ok); }
+    .badge.err { background: var(--err); }
+    .reason { color: var(--err); max-width: 460px; word-break: break-word; }
+    .muted { color: var(--muted); }
+    @media (max-width: 900px) {
+      .stats { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+      th, td { font-size: 12px; padding: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="card">
+      <div class="head">
+        <div>代理状态监控</div>
+        <a id="userAppLink" href="#" target="_blank" rel="noopener noreferrer">打开用户端登录页</a>
+      </div>
+      <div class="body">
+        <div class="toolbar">
+          <button id="refreshBtn">立即检测</button>
+          <label>
+            自动刷新
+            <select id="intervalSel">
+              <option value="0">关闭</option>
+              <option value="5000">5秒</option>
+              <option value="10000" selected>10秒</option>
+              <option value="30000">30秒</option>
+            </select>
+          </label>
+          <label>
+            超时(秒)
+            <input id="timeoutInput" type="number" min="0.3" max="10" step="0.1" value="2.0">
+          </label>
+          <span id="hint" class="muted"></span>
+        </div>
+
+        <div class="stats">
+          <div class="stat"><div class="k">总代理数</div><div id="total" class="v">-</div></div>
+          <div class="stat"><div class="k">在线</div><div id="online" class="v ok">-</div></div>
+          <div class="stat"><div class="k">掉线</div><div id="offline" class="v err">-</div></div>
+          <div class="stat"><div class="k">检测时间</div><div id="checkedAt" class="v" style="font-size:14px;">-</div></div>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>节点</th>
+              <th>IP</th>
+              <th>端口</th>
+              <th>状态</th>
+              <th>耗时(ms)</th>
+              <th>失败原因</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const refreshBtn = document.getElementById("refreshBtn");
+    const intervalSel = document.getElementById("intervalSel");
+    const timeoutInput = document.getElementById("timeoutInput");
+    const hint = document.getElementById("hint");
+    const rowsEl = document.getElementById("rows");
+    const userAppLink = document.getElementById("userAppLink");
+    let timer = null;
+    userAppLink.href = `${location.protocol}//${location.hostname}:7860/`;
+
+    function setHint(text, isErr) {
+      hint.textContent = text || "";
+      hint.style.color = isErr ? "#b83939" : "#647886";
+    }
+
+    function renderRows(rows) {
+      rowsEl.innerHTML = "";
+      rows.forEach(item => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${item.name || "-"}</td>
+          <td>${item.ip || "-"}</td>
+          <td>${item.port || "-"}</td>
+          <td>${item.online ? '<span class="badge ok">在线</span>' : '<span class="badge err">掉线</span>'}</td>
+          <td>${item.latency_ms ?? "-"}</td>
+          <td class="reason">${item.reason || ""}</td>
+        `;
+        rowsEl.appendChild(tr);
+      });
+    }
+
+    async function refreshStatus() {
+      const timeout = Number(timeoutInput.value || "2.0");
+      setHint("正在检测...", false);
+      try {
+        const resp = await fetch(`/api/proxy/status?timeout=${encodeURIComponent(timeout)}`);
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) throw new Error(data.error || "请求失败");
+        const d = data;
+        document.getElementById("total").textContent = d.total;
+        document.getElementById("online").textContent = d.online;
+        document.getElementById("offline").textContent = d.offline;
+        document.getElementById("checkedAt").textContent = d.checked_at;
+        renderRows(d.rows || []);
+        setHint(`完成：在线 ${d.online} / 掉线 ${d.offline}`, false);
+      } catch (error) {
+        setHint(`检测失败：${error.message}`, true);
+      }
+    }
+
+    function resetTimer() {
+      if (timer) clearInterval(timer);
+      const ms = Number(intervalSel.value);
+      if (ms > 0) timer = setInterval(refreshStatus, ms);
+    }
+
+    refreshBtn.addEventListener("click", refreshStatus);
+    intervalSel.addEventListener("change", resetTimer);
+    timeoutInput.addEventListener("change", refreshStatus);
+
+    resetTimer();
+    refreshStatus();
+  </script>
+</body>
+</html>

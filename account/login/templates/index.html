@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PVZ2 渠道登录中心</title>
+  <style>
+    :root {
+      --bg: #112218;
+      --bg2: #1b3a2a;
+      --panel: #f5f2e9;
+      --line: #d8d2c4;
+      --text: #1b2c24;
+      --muted: #5b6f67;
+      --accent: #d65f2d;
+      --ok: #22734c;
+      --err: #b93737;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: radial-gradient(circle at 10% 10%, #355f47 0%, transparent 36%),
+                  radial-gradient(circle at 90% 85%, #4f2a1f 0%, transparent 34%),
+                  linear-gradient(135deg, var(--bg), var(--bg2));
+      color: var(--text);
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .layout { max-width: 860px; margin: 0 auto; }
+    .card {
+      background: var(--panel);
+      border: 1px solid rgba(0,0,0,.08);
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 12px 30px rgba(0,0,0,.25);
+    }
+    .head {
+      padding: 14px 18px;
+      background: linear-gradient(90deg, #1d4432, #275f45);
+      color: #f0efe9;
+      font-weight: 700;
+      letter-spacing: .4px;
+    }
+    .body { padding: 16px 18px; }
+    .field { margin-bottom: 12px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    label { display: block; margin-bottom: 6px; font-size: 13px; color: var(--muted); font-weight: 600; }
+    select, input, textarea, button {
+      width: 100%;
+      font: inherit;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      background: #fffcf6;
+    }
+    textarea { min-height: 120px; resize: vertical; }
+    button {
+      width: auto;
+      border: none;
+      cursor: pointer;
+      font-weight: 700;
+      padding: 10px 14px;
+    }
+    .btn-main { background: linear-gradient(90deg, var(--accent), #bf7a2a); color: #fff; }
+    .btn-sub { background: #e9dec1; color: #5b4b1f; }
+    .btns { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+    .guide {
+      margin: 0 0 12px;
+      padding: 12px;
+      border-radius: 10px;
+      background: #efe9d8;
+      border: 1px solid #ddd2b2;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    .guide b { color: #38453d; }
+    .guide a { color: #0b5fd8; text-decoration: underline; }
+    .hide { display: none; }
+    .status {
+      margin-bottom: 10px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      display: none;
+    }
+    .status.ok { background: #e5f3ea; color: var(--ok); display: block; }
+    .status.err { background: #f8e8e8; color: var(--err); display: block; }
+    .mono { font-family: "Consolas", "JetBrains Mono", monospace; }
+    #yyb-qr-wrap img, #yyb-wx-qr-wrap img { max-width: 220px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    @media (max-width: 920px) {
+      .row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <section class="card">
+      <div class="head">PVZ2 渠道登录</div>
+      <div class="body">
+        <div id="status" class="status"></div>
+
+        <div class="field">
+          <label for="channel">渠道</label>
+          <select id="channel">
+            {% for c in channels %}
+            <option value="{{ c }}">{{ c }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div id="guide" class="guide"></div>
+        <div id="boundUserTip" class="guide"></div>
+
+        <div id="form-4399" class="channel-form">
+          <div class="row">
+            <div class="field"><label>4399账号</label><input id="u4399"></div>
+            <div class="field"><label>4399密码</label><input id="p4399" type="password"></div>
+          </div>
+          <div class="btns"><button class="btn-main" id="btn4399">登录</button></div>
+        </div>
+
+        <div id="form-九游" class="channel-form hide">
+          <div class="row">
+            <div class="field"><label>九游手机号</label><input id="jyMobile"></div>
+            <div class="field"><label>九游密码</label><input id="jyPassword" type="password"></div>
+          </div>
+          <div class="btns"><button class="btn-main" id="btnJyFetch">获取账号列表</button></div>
+          <div id="jySelectWrap" class="hide">
+            <div class="field">
+              <label>选择账号ID（一个手机号可能有多个账号）</label>
+              <select id="jyAccountSelect"></select>
+            </div>
+            <div class="btns"><button class="btn-main" id="btnJyLogin">登录选中账号</button></div>
+          </div>
+        </div>
+
+        <div id="form-vivo" class="channel-form hide">
+          <div class="field">
+            <label>Vivo JSON</label>
+            <textarea id="vivoJson" placeholder='粘贴 https://joint.vivo.com.cn/h5/union/get?gamePackage=com.popcap.pvz2cthdbbg 返回的完整JSON'></textarea>
+          </div>
+          <div class="btns"><button class="btn-main" id="btnVivoFetch">解析账号列表</button></div>
+          <div id="vivoSelectWrap" class="hide">
+            <div class="field">
+              <label>选择 subOpenId</label>
+              <select id="vivoSelect"></select>
+            </div>
+            <div class="btns"><button class="btn-main" id="btnVivoLogin">登录选中账号</button></div>
+          </div>
+        </div>
+
+        <div id="form-miui" class="channel-form hide">
+          <div class="field"><label>MIUI授权码 code</label><input id="miuiCode" placeholder="请从官方回调URL中手动提取并粘贴"></div>
+          <div class="field">
+            <label>官方回调完整 URL（可选）</label>
+            <input id="miuiCallbackUrl" placeholder="粘贴官方回调URL，可一键提取 code">
+          </div>
+          <div class="btns">
+            <button class="btn-sub" id="btnMiuiOpenAuth">打开官方授权页（手动）</button>
+            <button class="btn-sub" id="btnMiuiParseUrl">从回调URL提取code</button>
+            <button class="btn-main" id="btnMiui">登录</button>
+          </div>
+        </div>
+
+        <div id="form-拓维" class="channel-form hide">
+          <div class="row">
+            <div class="field"><label>拓维手机号</label><input id="tuoweiPhone"></div>
+            <div class="field"><label>拓维密码</label><input id="tuoweiPassword" type="password"></div>
+          </div>
+          <div class="btns"><button class="btn-main" id="btnTuowei">登录</button></div>
+        </div>
+
+        <div id="form-应用宝" class="channel-form hide">
+          <div class="field">
+            <label>QQ扫码登录</label>
+          </div>
+          <div class="btns">
+            <button class="btn-main" id="btnYybQr">生成二维码</button>
+            <button class="btn-sub" id="btnYybPoll">检查扫码状态</button>
+          </div>
+          <div id="yyb-qr-wrap" class="field hide">
+            <label>请用手机QQ扫码</label>
+            <img id="yybQrImg" alt="应用宝二维码">
+          </div>
+          <div class="field" style="margin-top: 14px;">
+            <label>微信扫码登录</label>
+          </div>
+          <div class="btns">
+            <button class="btn-main" id="btnYybWxQr">生成微信二维码</button>
+            <button class="btn-sub" id="btnYybWxPoll">检查微信扫码状态</button>
+          </div>
+          <div id="yyb-wx-qr-wrap" class="field hide">
+            <label>请用微信扫码</label>
+            <img id="yybWxQrImg" alt="应用宝微信二维码">
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const guideMap = {
+      "4399": "输入 4399 账号和密码，点击登录即可。",
+      "九游": "先输入手机号和密码获取账号列表，再选择具体账号登录。",
+      "vivo": "先访问 <a href=\"https://passport.vivo.com.cn/#/login?lang=zh_CN\" target=\"_blank\" rel=\"noopener noreferrer\">vivo 登录页</a> 完成登录，再打开 <a href=\"https://joint.vivo.com.cn/h5/union/get?gamePackage=com.popcap.pvz2cthdbbg\" target=\"_blank\" rel=\"noopener noreferrer\">JSON 获取页</a> 复制完整 JSON，粘贴后选择账号登录。",
+      "miui": "点击“打开官方授权页”登录后复制 code，粘贴后点击登录。",
+      "拓维官服": "输入拓维手机号和密码，登录官服渠道。",
+      "拓维Tap": "输入拓维手机号和密码，登录 TapTap 渠道。",
+      "拓维好游快爆": "输入拓维手机号和密码，登录好游快爆渠道。",
+      "应用宝": "支持QQ扫码和微信扫码：先生成对应二维码并扫码，再检查状态完成登录。"
+    };
+
+    const channelEl = document.getElementById("channel");
+    const forms = document.querySelectorAll(".channel-form");
+    const guideEl = document.getElementById("guide");
+    const boundUserTipEl = document.getElementById("boundUserTip");
+    const statusEl = document.getElementById("status");
+    const hasTokenUserId = {{ "true" if token_valid else "false" }};
+
+    let jiuyouContext = "";
+    let vivoContext = "";
+    let yybQrId = "";
+    let yybWxQrId = "";
+
+    function setStatus(msg, ok) {
+      statusEl.textContent = msg;
+      statusEl.className = ok ? "status ok" : "status err";
+    }
+    function clearStatus() {
+      statusEl.textContent = "";
+      statusEl.className = "status";
+    }
+    async function post(url, payload) {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload || {})
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data.ok) throw new Error(data.error || "请求失败");
+      return data;
+    }
+    async function get(url) {
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (!resp.ok || !data.ok) throw new Error(data.error || "请求失败");
+      return data;
+    }
+    function parseCodeFromUrl(raw) {
+      if (!raw) return "";
+      try {
+        const u = new URL(raw);
+        return (u.searchParams.get("code") || "").trim();
+      } catch (_) {
+        return "";
+      }
+    }
+
+    function switchChannel() {
+      const c = channelEl.value;
+      forms.forEach(f => f.classList.add("hide"));
+      const formKey = c.startsWith("拓维") ? "拓维" : c;
+      document.getElementById("form-" + formKey).classList.remove("hide");
+      guideEl.innerHTML = guideMap[c] || "";
+      clearStatus();
+    }
+
+    async function loadCurrentLoginRecord() {
+      try {
+        const data = await get("/api/me/login-record");
+        if (!data.has_login) {
+          boundUserTipEl.textContent = "当前暂无已登录账号。完成登录后将自动覆盖保存。";
+          return;
+        }
+        const record = data.record || {};
+        const channel = record.channel || "未知渠道";
+        const account = record.account_label || "已登录账号";
+        const createdAt = record.created_at || "";
+        boundUserTipEl.textContent = `当前已登录：${channel} / ${account}${createdAt ? "（" + createdAt + "）" : ""}。再次登录将覆盖。`;
+      } catch (_) {
+        boundUserTipEl.textContent = "已通过专属链接验证，可直接登录。";
+      }
+    }
+    channelEl.addEventListener("change", switchChannel);
+    switchChannel();
+
+    document.getElementById("btn4399").addEventListener("click", async () => {
+      clearStatus();
+      try {
+        await post("/api/4399/login", {
+          username: document.getElementById("u4399").value.trim(),
+          password: document.getElementById("p4399").value.trim()
+        });
+        setStatus("登录成功", true);
+        await loadCurrentLoginRecord();
+      } catch (e) { setStatus(e.message, false); }
+    });
+
+    document.getElementById("btnJyFetch").addEventListener("click", async () => {
+      clearStatus();
+      try {
+        const data = await post("/api/jiuyou/accounts", {
+          mobile: document.getElementById("jyMobile").value.trim(),
+          password: document.getElementById("jyPassword").value.trim()
+        });
+        jiuyouContext = data.context_id;
+        const select = document.getElementById("jyAccountSelect");
+        select.innerHTML = data.accounts.map(v => `<option value="${v}">${v}</option>`).join("");
+        document.getElementById("jySelectWrap").classList.remove("hide");
+        setStatus("已获取九游账号列表，请选择账号登录", true);
+      } catch (e) { setStatus(e.message, false); }
+    });
+
+    document.getElementById("btnJyLogin").addEventListener("click", async () => {
+      clearStatus();
+      try {
+        const accountId = document.getElementById("jyAccountSelect").value;
+        await post("/api/jiuyou/login", {context_id: jiuyouContext, account_id: accountId});
+        setStatus("登录成功", true);
+        await loadCurrentLoginRecord();
+      } catch (e) { setStatus(e.message, false); }
+    });
+
+    document.getElementById("btnVivoFetch").addEventListener("click", async () => {
+      clearStatus();
+      try {
+        const data = await post("/api/vivo/accounts", {
+          vivo_json: document.getElementById("vivoJson").value.trim()
+        });
+        vivoContext = data.context_id;
+        const select = document.getElementById("vivoSelect");
+        select.innerHTML = data.accounts.map(v => `<option value="${v}">${v}</option>`).join("");
+        document.getElementById("vivoSelectWrap").classList.remove("hide");
+        setStatus("已解析Vivo账号列表，请选择账号登录", true);
+      } catch (e) { setStatus(e.message, false); }
+    });
+
+    document.getElementById("btnVivoLogin").addEventListener("click", async () => {
+      clearStatus();
+      try {
+        const subOpenId = document.getElementById("vivoSelect").value;
+        await post("/api/vivo/login", {context_id: vivoContext, sub_open_id: subOpenId});
+        setStatus("登录成功", true);
+        await loadCurrentLoginRecord();
+      } catch (e) { setStatus(e.message, false); }
+    });
+
+    document.getElementById("btnMiui").addEventListener("click", async () => {
+      clearStatus();
+      try {
+        const payload = {auth_code: document.getElementById("miuiCode").value.trim()};
+        await post("/api/miui/login", payload);
+        setStatus("登录成功", true);
+        await loadCurrentLoginRecord();
+      } catch (e) { setStatus(e.message, false); }
+    });
+
+    document.getElementById("btnMiuiOpenAuth").addEventListener("click", () => {
+      clearStatus();
+      const authUrl = "https://account.xiaomi.com/oauth2/authorize"
+        + "?client_id=2882303761517516898"
+        + "&response_type=code"
+        + "&scope=" + encodeURIComponent("1 3")
+        + "&redirect_uri=" + encodeURIComponent("http://game.xiaomi.com/oauthcallback/mioauth")
+        + "&state=05dacf23d8eb09c7";
+      window.open(authUrl, "_blank", "noopener,noreferrer");
+      setStatus("已打开MIUI官方授权页，请登录后复制回调URL中的code", true);
+    });
+
+    document.getElementById("btnMiuiParseUrl").addEventListener("click", () => {
+      clearStatus();
+      const raw = document.getElementById("miuiCallbackUrl").value.trim();
+      const code = parseCodeFromUrl(raw);
+      if (!code) {
+        setStatus("未识别到 code，请检查回调URL是否完整", false);
+        return;
+      }
+      document.getElementById("miuiCode").value = code;
+      setStatus("已从回调URL提取 code", true);
+    });
+
+    document.getElementById("btnTuowei").addEventListener("click", async () => {
+      clearStatus();
+      const current = channelEl.value;
+      let subChannel = "";
+      if (current === "拓维官服") subChannel = "official";
+      if (current === "拓维Tap") subChannel = "tap";
+      if (current === "拓维好游快爆") subChannel = "goodswimming";
+      if (!subChannel) {
+        setStatus("请先选择拓维渠道（官服/Tap/好游快爆）", false);
+        return;
+      }
+      try {
+        await post("/api/tuowei/login", {
+          phone: document.getElementById("tuoweiPhone").value.trim(),
+          password: document.getElementById("tuoweiPassword").value.trim(),
+          sub_channel: subChannel
+        });
+        setStatus("登录成功", true);
+        await loadCurrentLoginRecord();
+      } catch (e) { setStatus(e.message, false); }
+    });
+
+    if (hasTokenUserId) {
+      loadCurrentLoginRecord();
+      clearStatus();
+    } else {
+      boundUserTipEl.innerHTML = "请使用专属登录链接打开页面。";
+      setStatus("请使用带token的链接打开页面，系统才会自动绑定用户ID", false);
+    }
+
+    document.getElementById("btnYybQr").addEventListener("click", async () => {
+      clearStatus();
+      try {
+        const data = await post("/api/yyb/qr/create", {});
+        yybQrId = data.qr_id;
+        const img = document.getElementById("yybQrImg");
+        img.src = "data:image/png;base64," + data.qr_image_base64;
+        document.getElementById("yyb-qr-wrap").classList.remove("hide");
+        setStatus("二维码已生成，请用手机QQ扫码", true);
+      } catch (e) { setStatus(e.message, false); }
+    });
+
+    document.getElementById("btnYybPoll").addEventListener("click", async () => {
+      clearStatus();
+      if (!yybQrId) {
+        setStatus("请先生成二维码", false);
+        return;
+      }
+      try {
+        const data = await get("/api/yyb/qr/poll?qr_id=" + encodeURIComponent(yybQrId));
+        if (data.status === "waiting") {
+          setStatus("等待扫码确认中", true);
+          return;
+        }
+        if (data.status === "expired") {
+          setStatus("二维码已过期，请重新生成", false);
+          return;
+        }
+        setStatus("登录成功", true);
+        await loadCurrentLoginRecord();
+      } catch (e) { setStatus(e.message, false); }
+    });
+
+    document.getElementById("btnYybWxQr").addEventListener("click", async () => {
+      clearStatus();
+      try {
+        const data = await post("/api/yyb/wx/qr/create", {});
+        yybWxQrId = data.qr_id;
+        const img = document.getElementById("yybWxQrImg");
+        img.src = "data:image/png;base64," + data.qr_image_base64;
+        document.getElementById("yyb-wx-qr-wrap").classList.remove("hide");
+        setStatus("微信二维码已生成，请用微信扫码", true);
+      } catch (e) { setStatus(e.message, false); }
+    });
+
+    document.getElementById("btnYybWxPoll").addEventListener("click", async () => {
+      clearStatus();
+      if (!yybWxQrId) {
+        setStatus("请先生成微信二维码", false);
+        return;
+      }
+      try {
+        const data = await get("/api/yyb/wx/qr/poll?qr_id=" + encodeURIComponent(yybWxQrId));
+        if (data.status === "waiting") {
+          setStatus("等待微信扫码确认中", true);
+          return;
+        }
+        if (data.status === "expired") {
+          setStatus("微信二维码已过期，请重新生成", false);
+          return;
+        }
+        setStatus("登录成功", true);
+        await loadCurrentLoginRecord();
+      } catch (e) { setStatus(e.message, false); }
+    });
+  </script>
+</body>
+</html>
